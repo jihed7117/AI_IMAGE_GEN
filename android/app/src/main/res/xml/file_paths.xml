@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Paths the FileProvider may expose when sharing generated images. Images are
+  stored under the app's internal files dir (getApplicationSupportDirectory()
+  on Android); the external path covers images moved to public storage.
+-->
+<paths>
+    <files-path name="internal" path="." />
+    <external-path name="external" path="." />
+</paths>

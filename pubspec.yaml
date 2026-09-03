@@ -1,0 +1,51 @@
+name: aiimagegen
+description: "AI Image Gen - run Stable Diffusion (SD 1.5 & SDXL 1.0) locally on your device."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.9.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  provider: ^6.1.2
+  sqflite: ^2.4.1
+  path_provider: ^2.1.5
+  path: ^1.9.0
+  shared_preferences: ^2.3.3
+  image: ^4.3.0
+  onnxruntime: ^1.4.1
+  file_picker: ^8.1.2
+
+dependency_overrides:
+  # Local fork of onnxruntime 1.4.1 adding fp16 (float16) tensor output
+  # support, needed to run fp16 ONNX models (e.g. SD 1.5 fp16) end-to-end.
+  onnxruntime:
+    path: third_party/onnxruntime
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon.png"
+  web:
+    generate: true
+    image_path: "assets/icon.png"
+    background_color: "#0B0E1A"
+    theme_color: "#0B0E1A"
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/logo.png
+    - assets/icon.png

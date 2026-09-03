@@ -1,0 +1,301 @@
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+
+import 'models.dart';
+import 'prefs.dart';
+
+const _sd15Base = 'https://huggingface.co/nmkd/stable-diffusion-1.5-onnx-fp16/resolve/main';
+const _sdxlBase = 'https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main';
+
+const _schedulerSd15 = <String, dynamic>{
+  'beta_start': 0.00085,
+  'beta_end': 0.012,
+  'num_train_timesteps': 1000,
+  'prediction_type': 'epsilon',
+};
+
+const _schedulerSdxl = <String, dynamic>{
+  'beta_start': 0.00085,
+  'beta_end': 0.012,
+  'num_train_timesteps': 1000,
+  'prediction_type': 'epsilon',
+};
+
+/// Built-in model manifests. URLs and byte sizes were verified against the
+/// upstream Hugging Face repos (see README).
+const builtinModelManifests = <Map<String, dynamic>>[
+  {
+    'id': 'sd15',
+    'name': 'Stable Diffusion 1.5',
+    'family': 'sd15',
+    'dtype': 'fp16',
+    'resolution': 512,
+    'storage_gb': 4,
+    'ram_gb': 4,
+    'source_url': 'https://huggingface.co/nmkd/stable-diffusion-1.5-onnx-fp16',
+    'sample_prompt': 'a photo of a cat, high quality, detailed',
+    'notes': 'Fastest option. ~2GB of ONNX weights plus a 1.7GB fp16 unet '
+        'weights blob. Needs roughly 4GB free RAM to run.',
+    'scheduler': _schedulerSd15,
+    'files': [
+      {
+        'path': 'text_encoder/model.onnx',
+        'url': '$_sd15Base/text_encoder/model.onnx',
+        'size': 246476214,
+      },
+      {
+        'path': 'unet/model.onnx',
+        'url': '$_sd15Base/unet/model.onnx',
+        'size': 1217704,
+      },
+      {
+        'path': 'unet/weights.pb',
+        'url': '$_sd15Base/unet/weights.pb',
+        'size': 1718976000,
+      },
+      {
+        'path': 'vae_decoder/model.onnx',
+        'url': '$_sd15Base/vae_decoder/model.onnx',
+        'size': 99094195,
+      },
+      {
+        'path': 'tokenizer/vocab.json',
+        'url': '$_sd15Base/tokenizer/vocab.json',
+        'size': 1059962,
+      },
+      {
+        'path': 'tokenizer/merges.txt',
+        'url': '$_sd15Base/tokenizer/merges.txt',
+        'size': 524619,
+      },
+    ],
+  },
+  {
+    'id': 'sdxl',
+    'name': 'Stable Diffusion XL 1.0',
+    'family': 'sdxl',
+    'dtype': 'fp32',
+    'resolution': 1024,
+    'storage_gb': 8,
+    'ram_gb': 8,
+    'source_url': 'https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0',
+    'sample_prompt': 'a cinematic photo of a mountain lake at sunset',
+    'notes': 'Higher quality. Official fp32 ONNX (~13.75GB). Needs ~8GB RAM '
+        'and a high-end phone; very slow on CPU.',
+    'scheduler': _schedulerSdxl,
+    'files': [
+      {
+        'path': 'text_encoder/model.onnx',
+        'url': '$_sdxlBase/text_encoder/model.onnx',
+        'size': 492587457,
+      },
+      {
+        'path': 'text_encoder_2/model.onnx',
+        'url': '$_sdxlBase/text_encoder_2/model.onnx',
+        'size': 1041992,
+      },
+      {
+        'path': 'text_encoder_2/config.json',
+        'url': '$_sdxlBase/text_encoder_2/config.json',
+        'size': 611,
+      },
+      {
+        'path': 'unet/model.onnx',
+        'url': '$_sdxlBase/unet/model.onnx',
+        'size': 7293842,
+      },
+      {
+        'path': 'unet/model.onnx_data',
+        'url': '$_sdxlBase/unet/model.onnx_data',
+        'size': 10269854720,
+      },
+      {
+        'path': 'vae_decoder/model.onnx',
+        'url': '$_sdxlBase/vae_decoder/model.onnx',
+        'size': 198093688,
+      },
+      {
+        'path': 'tokenizer/vocab.json',
+        'url': '$_sdxlBase/tokenizer/vocab.json',
+        'size': 1059962,
+      },
+      {
+        'path': 'tokenizer/merges.txt',
+        'url': '$_sdxlBase/tokenizer/merges.txt',
+        'size': 524619,
+      },
+      {
+        'path': 'tokenizer_2/vocab.json',
+        'url': '$_sdxlBase/tokenizer_2/vocab.json',
+        'size': 1059962,
+      },
+      {
+        'path': 'tokenizer_2/merges.txt',
+        'url': '$_sdxlBase/tokenizer_2/merges.txt',
+        'size': 524619,
+      },
+    ],
+  },
+];
+
+/// A file selected by the user, mapped to its target path inside the model's
+/// directory (relative, e.g. `unet/model.onnx`).
+class DeviceImportFile {
+  final String sourcePath;
+  final String targetPath;
+  const DeviceImportFile(this.sourcePath, this.targetPath);
+}
+
+/// Manages the list of known models (built-ins + user-imported).
+class ModelRegistry {
+  final AppPrefs _prefs;
+
+  ModelRegistry(this._prefs);
+
+  List<ModelSpec> get all => [
+        ...builtinModelManifests.map(ModelSpec.new),
+        ..._prefs.customModels.map(ModelSpec.new),
+      ];
+
+  ModelSpec? byId(String id) {
+    for (final m in all) {
+      if (m.id == id) return m;
+    }
+    return null;
+  }
+
+  ModelSpec get defaultModel => byId(_prefs.selectedModelId) ?? all.first;
+
+  Future<void> setSelected(String id) => _prefs.setSelectedModelId(id);
+
+  /// Adds a user-defined model from a pasted manifest URL.
+  ///
+  /// The manifest is a JSON file (like the one generated by
+  /// `tool/import_model.py`) listing `files: [{path, url, size}]`.
+  Future<void> importFromManifestUrl(String url) async {
+    final http = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 20);
+    try {
+      final req = await http.getUrl(Uri.parse(url));
+      req.headers.set('User-Agent', 'AI-Image-Gen/1.0');
+      final res = await req.close();
+      if (res.statusCode != 200) {
+        throw Exception('HTTP ${res.statusCode} for manifest');
+      }
+      final body = await res.transform(utf8.decoder).join();
+      final manifest = jsonDecode(body) as Map<String, dynamic>;
+      if (manifest['id'] == null || manifest['files'] == null) {
+        throw const FormatException('Manifest needs "id" and "files"');
+      }
+      final existing = byId(manifest['id'] as String);
+      if (existing != null && !existing.isCustom) {
+        throw Exception('Model id "${manifest['id']}" is a built-in');
+      }
+      final manifests = [..._prefs.customModels];
+      manifests.removeWhere((m) => m['id'] == manifest['id']);
+      manifests.add(manifest);
+      await _prefs.saveCustomModels(manifests);
+    } finally {
+      http.close(force: true);
+    }
+  }
+
+  /// Builds the destination directory for a model's files.
+  Future<Directory> modelDir(ModelSpec model) async {
+    final root = await modelRoot();
+    return Directory(p.join(root.path, model.id));
+  }
+
+  Future<Directory> modelDirForId(String id) async {
+    final root = await modelRoot();
+    return Directory(p.join(root.path, id));
+  }
+
+  /// Copies user-selected files from the device into the app's model storage
+  /// and registers a custom model backed by them.
+  ///
+  /// [files] maps each source file to its relative target path inside the
+  /// model directory. When [runnable] is true the layout matches what the
+  /// engine expects (unet/model.onnx, vae_decoder/model.onnx, ...); otherwise
+  /// the files are stored as-is (e.g. raw .safetensors/.ckpt weights) and the
+  /// model is registered but marked non-runnable.
+  Future<ModelSpec> importFromDevice({
+    required String name,
+    required List<DeviceImportFile> files,
+    required int resolution,
+    required bool runnable,
+  }) async {
+    final id =
+        '${_slug(name)}_${DateTime.now().millisecondsSinceEpoch}';
+    final dir = await modelDirForId(id);
+    await dir.create(recursive: true);
+
+    final manifestFiles = <Map<String, dynamic>>[];
+    for (final f in files) {
+      final source = File(f.sourcePath);
+      if (!source.existsSync()) {
+        throw Exception('Selected file no longer exists: ${source.path}');
+      }
+      final target = File(p.join(dir.path, f.targetPath));
+      await target.parent.create(recursive: true);
+      await source.copy(target.path);
+      manifestFiles.add({
+        'path': f.targetPath,
+        'url': '',
+        'size': target.lengthSync(),
+      });
+    }
+
+    final total = manifestFiles.fold<int>(0, (a, m) => a + (m['size'] as int));
+    final manifest = <String, dynamic>{
+      'id': id,
+      'name': name,
+      'family': 'sd15',
+      'dtype': 'custom',
+      'resolution': resolution,
+      'storage_gb': total / 1e9,
+      'ram_gb': 0,
+      'notes': runnable
+          ? 'Imported from device. ONNX files are stored in app storage.'
+          : 'Weights imported from device into app storage. On-device '
+              'generation requires an ONNX UNet + VAE decoder (convert the '
+              'weights first).',
+      'source_url': '',
+      'sample_prompt': '',
+      'custom': true,
+      'runnable': runnable,
+      'files': manifestFiles,
+    };
+
+    final manifests = [
+      ..._prefs.customModels,
+      manifest,
+    ];
+    await _prefs.saveCustomModels(manifests);
+    return ModelSpec(manifest);
+  }
+
+  Future<Directory> modelRoot() async {
+    final support = await getApplicationSupportDirectory();
+    return Directory(p.join(support.path, 'models'))..createSync(recursive: true);
+  }
+
+  /// Deletes every downloaded file of a model from disk.
+  Future<void> deleteFromDisk(ModelSpec model) async {
+    final dir = await modelDir(model);
+    if (dir.existsSync()) {
+      await dir.delete(recursive: true);
+    }
+  }
+
+  static String _slug(String name) {
+    final cleaned = name
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), '_')
+        .replaceAll(RegExp(r'^_+|_+$'), '');
+    return cleaned.isEmpty ? 'model' : cleaned;
+  }
+}
